@@ -6,9 +6,8 @@ class ConwaysGame {
         this.gl = null;
         this.webglAvailable = false;
         this.useGpuSimulation = true;
-        this.lastGpuStatsTime = 0;
-        this.gpuStatsInterval = 250;
         this.prevGpuFrame = null;
+        this.cpuGridDirtyFromGpu = false;
         this.resizeCanvas();
 
         // Grid properties
@@ -41,6 +40,7 @@ class ConwaysGame {
         this.isFrozen = false;
         this.isDragging = false;
         this.lastCell = null;
+        this.dragPaintValue = null;
 
         // Statistics
         this.stats = { born: 0, died: 0, lasting: 0, total: 0 };
@@ -49,7 +49,7 @@ class ConwaysGame {
         this.SAVE_KEY = 'conways-game-save-v1';
         this.AUTOSAVE_INTERVAL = 5000;
         this.lastAutosaveTime = 0;
-        this.MIN_UPDATE_INTERVAL = 10;
+        this.MIN_UPDATE_INTERVAL = 5;
         this.MAX_UPDATE_INTERVAL = 1000;
         this.MAX_STEPS_PER_FRAME = 6;
 
@@ -250,9 +250,10 @@ class ConwaysGame {
                 vec2 rel = mod(screen - u_camera, cellPixels);
                 float lineX = 1.0 - step(1.0, rel.x);
                 float lineY = 1.0 - step(1.0, rel.y);
-                float line = max(lineX, lineY) * step(4.0, pixelCell);
+                float line = max(lineX, lineY) * smoothstep(2.0, 5.0, pixelCell);
 
-                vec3 bg = mix(vec3(0.0), vec3(0.196), line);
+                vec3 bgBase = vec3(0.01);
+                vec3 bg = mix(bgBase, vec3(0.196), line);
                 vec3 fg = vec3(1.0);
                 vec3 color = (alive > 0.5) ? fg : bg;
                 outColor = vec4(color, 1.0);
@@ -277,7 +278,9 @@ class ConwaysGame {
         this.stateTextures = [null, null];
         this.stateFramebuffers = [null, null];
         this.sourceIndex = 0;
-        this.recreateGpuStateTextures();
+        if (!this.recreateGpuStateTextures()) {
+            return false;
+        }
         return true;
     }
 
@@ -315,8 +318,8 @@ class ConwaysGame {
     }
 
     recreateGpuStateTextures() {
-        if (!this.webglAvailable) {
-            return;
+        if (!this.gl) {
+            return false;
         }
         const gl = this.gl;
         for (let i = 0; i < 2; i++) {
@@ -334,11 +337,15 @@ class ConwaysGame {
             gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
             gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
             gl.pixelStorei(gl.UNPACK_ALIGNMENT, 1);
-            gl.texImage2D(gl.TEXTURE_2D, 0, gl.R8, this.gridWidth, this.gridHeight, 0, gl.RED, gl.UNSIGNED_BYTE, null);
+            gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA8, this.gridWidth, this.gridHeight, 0, gl.RGBA, gl.UNSIGNED_BYTE, null);
 
             const framebuffer = gl.createFramebuffer();
             gl.bindFramebuffer(gl.FRAMEBUFFER, framebuffer);
             gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, texture, 0);
+            if (gl.checkFramebufferStatus(gl.FRAMEBUFFER) !== gl.FRAMEBUFFER_COMPLETE) {
+                gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+                return false;
+            }
 
             this.stateTextures[i] = texture;
             this.stateFramebuffers[i] = framebuffer;
@@ -347,14 +354,20 @@ class ConwaysGame {
         gl.bindFramebuffer(gl.FRAMEBUFFER, null);
         this.sourceIndex = 0;
         this.prevGpuFrame = null;
+        this.cpuGridDirtyFromGpu = false;
+        return true;
     }
 
     flattenGridToBytes() {
-        const bytes = new Uint8Array(this.gridWidth * this.gridHeight);
+        const bytes = new Uint8Array(this.gridWidth * this.gridHeight * 4);
         let idx = 0;
         for (let y = 0; y < this.gridHeight; y++) {
             for (let x = 0; x < this.gridWidth; x++) {
-                bytes[idx++] = this.grid[y][x] ? 255 : 0;
+                const v = this.grid[y][x] ? 255 : 0;
+                bytes[idx++] = v;
+                bytes[idx++] = 0;
+                bytes[idx++] = 0;
+                bytes[idx++] = 255;
             }
         }
         return bytes;
@@ -370,8 +383,9 @@ class ConwaysGame {
         for (let i = 0; i < 2; i++) {
             gl.bindTexture(gl.TEXTURE_2D, this.stateTextures[i]);
             gl.pixelStorei(gl.UNPACK_ALIGNMENT, 1);
-            gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, 0, this.gridWidth, this.gridHeight, gl.RED, gl.UNSIGNED_BYTE, bytes);
+            gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, 0, this.gridWidth, this.gridHeight, gl.RGBA, gl.UNSIGNED_BYTE, bytes);
         }
+        this.cpuGridDirtyFromGpu = false;
     }
 
     pullGridFromGPU() {
@@ -379,16 +393,24 @@ class ConwaysGame {
             return;
         }
         const gl = this.gl;
-        const pixels = new Uint8Array(this.gridWidth * this.gridHeight);
+        const pixels = new Uint8Array(this.gridWidth * this.gridHeight * 4);
         gl.bindFramebuffer(gl.FRAMEBUFFER, this.stateFramebuffers[this.sourceIndex]);
-        gl.readPixels(0, 0, this.gridWidth, this.gridHeight, gl.RED, gl.UNSIGNED_BYTE, pixels);
+        gl.readPixels(0, 0, this.gridWidth, this.gridHeight, gl.RGBA, gl.UNSIGNED_BYTE, pixels);
         gl.bindFramebuffer(gl.FRAMEBUFFER, null);
 
         let idx = 0;
         for (let y = 0; y < this.gridHeight; y++) {
             for (let x = 0; x < this.gridWidth; x++) {
-                this.grid[y][x] = pixels[idx++] > 127 ? 1 : 0;
+                this.grid[y][x] = pixels[idx] > 127 ? 1 : 0;
+                idx += 4;
             }
+        }
+        this.cpuGridDirtyFromGpu = false;
+    }
+
+    ensureCpuGridSynced() {
+        if (this.webglAvailable && this.useGpuSimulation && this.cpuGridDirtyFromGpu) {
+            this.pullGridFromGPU();
         }
     }
 
@@ -397,11 +419,11 @@ class ConwaysGame {
             return;
         }
         const gl = this.gl;
-        const pixel = new Uint8Array([value ? 255 : 0]);
+        const pixel = new Uint8Array([value ? 255 : 0, 0, 0, 255]);
         for (let i = 0; i < 2; i++) {
             gl.bindTexture(gl.TEXTURE_2D, this.stateTextures[i]);
             gl.pixelStorei(gl.UNPACK_ALIGNMENT, 1);
-            gl.texSubImage2D(gl.TEXTURE_2D, 0, x, y, 1, 1, gl.RED, gl.UNSIGNED_BYTE, pixel);
+            gl.texSubImage2D(gl.TEXTURE_2D, 0, x, y, 1, 1, gl.RGBA, gl.UNSIGNED_BYTE, pixel);
         }
     }
 
@@ -430,6 +452,7 @@ class ConwaysGame {
         gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
         gl.bindFramebuffer(gl.FRAMEBUFFER, null);
         this.sourceIndex = dst;
+        this.cpuGridDirtyFromGpu = true;
     }
 
     drawWebGL() {
@@ -455,22 +478,22 @@ class ConwaysGame {
         gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
     }
 
-    updateGpuStats(currentTime) {
-        if (!this.webglAvailable || currentTime - this.lastGpuStatsTime < this.gpuStatsInterval) {
+    updateGpuStats() {
+        if (!this.webglAvailable) {
             return;
         }
 
         const gl = this.gl;
-        const pixels = new Uint8Array(this.gridWidth * this.gridHeight);
+        const pixels = new Uint8Array(this.gridWidth * this.gridHeight * 4);
         gl.bindFramebuffer(gl.FRAMEBUFFER, this.stateFramebuffers[this.sourceIndex]);
-        gl.readPixels(0, 0, this.gridWidth, this.gridHeight, gl.RED, gl.UNSIGNED_BYTE, pixels);
+        gl.readPixels(0, 0, this.gridWidth, this.gridHeight, gl.RGBA, gl.UNSIGNED_BYTE, pixels);
         gl.bindFramebuffer(gl.FRAMEBUFFER, null);
 
         let total = 0;
         let born = 0;
         let died = 0;
         let lasting = 0;
-        for (let i = 0; i < pixels.length; i++) {
+        for (let i = 0; i < pixels.length; i += 4) {
             const alive = pixels[i] > 127;
             if (alive) {
                 total += 1;
@@ -497,7 +520,6 @@ class ConwaysGame {
         }
 
         this.prevGpuFrame = pixels;
-        this.lastGpuStatsTime = currentTime;
     }
 
     setGpuSimulationEnabled(enabled) {
@@ -535,7 +557,11 @@ class ConwaysGame {
         
         // Mouse events
         this.canvas.addEventListener('mousedown', (e) => this.handleMouseDown(e));
-        this.canvas.addEventListener('mouseup', () => this.isDragging = false);
+        this.canvas.addEventListener('mouseup', () => {
+            this.isDragging = false;
+            this.dragPaintValue = null;
+            this.lastCell = null;
+        });
         this.canvas.addEventListener('mousemove', (e) => this.handleMouseMove(e));
         
         // Wheel / touchpad two-finger vertical scroll zoom
@@ -606,7 +632,7 @@ class ConwaysGame {
                     if (!this.isRunning || this.isFrozen) {
                         if (this.webglAvailable && this.useGpuSimulation) {
                             this.runGpuStep();
-                            this.updateGpuStats(Date.now());
+                            this.updateGpuStats();
                         } else {
                             this.updateGrid();
                             if (this.webglAvailable) {
@@ -639,6 +665,9 @@ class ConwaysGame {
 
         this.startButton.onclick = (e) => {
             this.isRunning = !this.isRunning;
+            if (!this.isRunning) {
+                this.ensureCpuGridSynced();
+            }
             this.syncControlButtons();
             e.target.blur();
         };
@@ -658,6 +687,9 @@ class ConwaysGame {
 
         this.freezeButton.onclick = (e) => {
             this.isFrozen = !this.isFrozen;
+            if (this.isFrozen) {
+                this.ensureCpuGridSynced();
+            }
             this.syncControlButtons();
             e.target.blur();
         };
@@ -999,8 +1031,8 @@ class ConwaysGame {
 
     handleMouseDown(e) {
         e.preventDefault();
-        // Only allow editing if simulation is not running or is frozen
-        if (this.isRunning && !this.isFrozen) return;
+
+        this.ensureCpuGridSynced();
 
         const rect = this.canvas.getBoundingClientRect();
         const pos = this.screenToGrid(e.clientX - rect.left, e.clientY - rect.top);
@@ -1008,13 +1040,17 @@ class ConwaysGame {
         if (pos.x > 0 && pos.x < this.gridWidth - 1 && 
             pos.y > 0 && pos.y < this.gridHeight - 1) {
             this.isDragging = true;
+            this.lastCell = `${pos.x},${pos.y}`;
             if (e.button === 0) {
-                this.grid[pos.y][pos.x] = 1 - this.grid[pos.y][pos.x];
+                const nextValue = 1 - this.grid[pos.y][pos.x];
+                this.grid[pos.y][pos.x] = nextValue;
+                this.dragPaintValue = nextValue;
                 if (this.webglAvailable) {
-                    this.setCellGPU(pos.x, pos.y, this.grid[pos.y][pos.x]);
+                    this.setCellGPU(pos.x, pos.y, nextValue);
                 }
             } else if (e.button === 1) {
                 this.grid[pos.y][pos.x] = 0;
+                this.dragPaintValue = 0;
                 if (this.webglAvailable) {
                     this.setCellGPU(pos.x, pos.y, 0);
                 }
@@ -1023,8 +1059,6 @@ class ConwaysGame {
     }
 
     handleMouseMove(e) {
-        // Only allow editing if simulation is not running or is frozen
-        if (this.isRunning && !this.isFrozen) return;
         if (!this.isDragging) return;
         
         const rect = this.canvas.getBoundingClientRect();
@@ -1032,10 +1066,17 @@ class ConwaysGame {
         
         if (pos.x > 0 && pos.x < this.gridWidth - 1 && 
             pos.y > 0 && pos.y < this.gridHeight - 1) {
+            const cellKey = `${pos.x},${pos.y}`;
+            if (cellKey === this.lastCell) {
+                return;
+            }
+            this.lastCell = cellKey;
+
             if (e.buttons === 1) {
-                this.grid[pos.y][pos.x] = 1;
+                const value = this.dragPaintValue === null ? 1 : this.dragPaintValue;
+                this.grid[pos.y][pos.x] = value;
                 if (this.webglAvailable) {
-                    this.setCellGPU(pos.x, pos.y, 1);
+                    this.setCellGPU(pos.x, pos.y, value);
                 }
             } else if (e.buttons === 4) {
                 this.grid[pos.y][pos.x] = 0;
@@ -1055,6 +1096,17 @@ class ConwaysGame {
         const startY = Math.max(0, Math.floor(-this.camera.y / (this.cellSize * this.camera.zoom)));
         const endX = Math.min(this.gridWidth, Math.ceil((this.canvas.width - this.camera.x) / (this.cellSize * this.camera.zoom)));
         const endY = Math.min(this.gridHeight, Math.ceil((this.canvas.height - this.camera.y) / (this.cellSize * this.camera.zoom)));
+
+        const topLeft = this.gridToScreen(0, 0);
+        const bottomRight = this.gridToScreen(this.gridWidth, this.gridHeight);
+        const bgX = Math.max(0, topLeft.x);
+        const bgY = Math.max(0, topLeft.y);
+        const bgW = Math.max(0, Math.min(this.canvas.width, bottomRight.x) - bgX);
+        const bgH = Math.max(0, Math.min(this.canvas.height, bottomRight.y) - bgY);
+        if (bgW > 0 && bgH > 0) {
+            ctx.fillStyle = '#050505';
+            ctx.fillRect(bgX, bgY, bgW, bgH);
+        }
 
         // Draw grid lines
         ctx.beginPath();
@@ -1259,6 +1311,7 @@ class ConwaysGame {
                 while (currentTime - this.lastUpdateTime >= this.UPDATE_INTERVAL && steps < this.MAX_STEPS_PER_FRAME) {
                     if (this.webglAvailable && this.useGpuSimulation) {
                         this.runGpuStep();
+                        this.updateGpuStats();
                     } else {
                         this.updateGrid();
                         if (this.webglAvailable) {
@@ -1275,9 +1328,6 @@ class ConwaysGame {
 
             if (this.webglAvailable) {
                 this.drawWebGL();
-                if (this.useGpuSimulation) {
-                    this.updateGpuStats(currentTime);
-                }
             } else {
                 this.ctx.fillStyle = '#000000';
                 this.ctx.fillRect(0, 0, this.canvas.width, this.canvas.height);
