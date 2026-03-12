@@ -2,7 +2,13 @@ class ConwaysGame {
     constructor() {
         // Canvas setup
         this.canvas = document.getElementById('gameCanvas');
-        this.ctx = this.canvas.getContext('2d');
+        this.ctx = null;
+        this.gl = null;
+        this.webglAvailable = false;
+        this.useGpuSimulation = true;
+        this.lastGpuStatsTime = 0;
+        this.gpuStatsInterval = 250;
+        this.prevGpuFrame = null;
         this.resizeCanvas();
 
         // Grid properties
@@ -45,6 +51,7 @@ class ConwaysGame {
         this.lastAutosaveTime = 0;
         this.MIN_UPDATE_INTERVAL = 10;
         this.MAX_UPDATE_INTERVAL = 1000;
+        this.MAX_STEPS_PER_FRAME = 6;
 
         // Add movement state tracking
         this.moveKeys = { w: false, s: false, a: false, d: false };
@@ -54,6 +61,7 @@ class ConwaysGame {
         this.ZOOM_SMOOTHING = 0.1; // Adjust this value to change zoom smoothness
 
         // Setup
+        this.initRenderingBackend();
         this.setupEventListeners();
         this.setupButtons();
         this.setupPersistenceControls();
@@ -103,11 +111,391 @@ class ConwaysGame {
         this.targetCamera.x = centered.x;
         this.targetCamera.y = centered.y;
         this.stats.total = this.grid.flat().reduce((a, b) => a + b, 0);
+
+        if (this.webglAvailable) {
+            this.recreateGpuStateTextures();
+            this.uploadGridToGPU();
+        }
     }
 
     resizeCanvas() {
         this.canvas.width = window.innerWidth;
         this.canvas.height = window.innerHeight;
+    }
+
+    initRenderingBackend() {
+        const gl = this.canvas.getContext('webgl2', { antialias: false, preserveDrawingBuffer: false });
+        if (!gl) {
+            this.ctx = this.canvas.getContext('2d');
+            this.webglAvailable = false;
+            this.useGpuSimulation = false;
+            return;
+        }
+
+        this.gl = gl;
+        this.webglAvailable = this.initWebGLResources();
+        if (!this.webglAvailable) {
+            this.gl = null;
+            this.ctx = this.canvas.getContext('2d');
+            this.useGpuSimulation = false;
+            return;
+        }
+
+        this.uploadGridToGPU();
+    }
+
+    initWebGLResources() {
+        const gl = this.gl;
+        const simVs = `#version 300 es
+            in vec2 a_pos;
+            void main() {
+                gl_Position = vec4(a_pos, 0.0, 1.0);
+            }
+        `;
+        const simFs = `#version 300 es
+            precision highp float;
+            precision highp sampler2D;
+            uniform sampler2D u_state;
+            uniform ivec2 u_gridSize;
+            out vec4 outColor;
+
+            int cellAt(ivec2 p) {
+                if (p.x < 0 || p.y < 0 || p.x >= u_gridSize.x || p.y >= u_gridSize.y) {
+                    return 0;
+                }
+                return int(texelFetch(u_state, p, 0).r + 0.5);
+            }
+
+            void main() {
+                ivec2 p = ivec2(gl_FragCoord.xy);
+                if (p.x == 0 || p.y == 0 || p.x == u_gridSize.x - 1 || p.y == u_gridSize.y - 1) {
+                    outColor = vec4(0.0, 0.0, 0.0, 1.0);
+                    return;
+                }
+
+                int alive = cellAt(p);
+                int n = 0;
+                n += cellAt(p + ivec2(-1, -1));
+                n += cellAt(p + ivec2( 0, -1));
+                n += cellAt(p + ivec2( 1, -1));
+                n += cellAt(p + ivec2(-1,  0));
+                n += cellAt(p + ivec2( 1,  0));
+                n += cellAt(p + ivec2(-1,  1));
+                n += cellAt(p + ivec2( 0,  1));
+                n += cellAt(p + ivec2( 1,  1));
+
+                int nextState = 0;
+                if (alive == 1) {
+                    nextState = (n == 2 || n == 3) ? 1 : 0;
+                } else {
+                    nextState = (n == 3) ? 1 : 0;
+                }
+
+                outColor = vec4(float(nextState), 0.0, 0.0, 1.0);
+            }
+        `;
+
+        const drawVs = `#version 300 es
+            in vec2 a_pos;
+            void main() {
+                gl_Position = vec4(a_pos, 0.0, 1.0);
+            }
+        `;
+        const drawFs = `#version 300 es
+            precision highp float;
+            precision highp sampler2D;
+            uniform sampler2D u_state;
+            uniform vec2 u_canvasSize;
+            uniform vec2 u_camera;
+            uniform float u_zoom;
+            uniform float u_cellSize;
+            uniform vec2 u_gridSize;
+            out vec4 outColor;
+
+            void main() {
+                float yTop = u_canvasSize.y - gl_FragCoord.y;
+                vec2 screen = vec2(gl_FragCoord.x, yTop);
+                vec2 world = (screen - u_camera) / (u_cellSize * u_zoom);
+                vec2 g = floor(world);
+
+                if (g.x < 0.0 || g.y < 0.0 || g.x >= u_gridSize.x || g.y >= u_gridSize.y) {
+                    outColor = vec4(0.0, 0.0, 0.0, 1.0);
+                    return;
+                }
+
+                ivec2 cell = ivec2(int(g.x), int(g.y));
+                float alive = texelFetch(u_state, cell, 0).r;
+
+                vec2 local = fract(world);
+                float lineX = step(local.x, 0.04);
+                float lineY = step(local.y, 0.04);
+                float line = min(1.0, lineX + lineY);
+
+                vec3 bg = mix(vec3(0.0), vec3(0.196), line);
+                vec3 fg = vec3(1.0);
+                vec3 color = (alive > 0.5) ? fg : bg;
+                outColor = vec4(color, 1.0);
+            }
+        `;
+
+        this.simProgram = this.createProgram(simVs, simFs);
+        this.drawProgram = this.createProgram(drawVs, drawFs);
+        if (!this.simProgram || !this.drawProgram) {
+            return false;
+        }
+
+        this.quadBuffer = gl.createBuffer();
+        gl.bindBuffer(gl.ARRAY_BUFFER, this.quadBuffer);
+        gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([
+            -1, -1,
+             1, -1,
+            -1,  1,
+             1,  1
+        ]), gl.STATIC_DRAW);
+
+        this.stateTextures = [null, null];
+        this.stateFramebuffers = [null, null];
+        this.sourceIndex = 0;
+        this.recreateGpuStateTextures();
+        return true;
+    }
+
+    createProgram(vsSource, fsSource) {
+        const gl = this.gl;
+        const compile = (type, source) => {
+            const shader = gl.createShader(type);
+            gl.shaderSource(shader, source);
+            gl.compileShader(shader);
+            if (!gl.getShaderParameter(shader, gl.COMPILE_STATUS)) {
+                gl.deleteShader(shader);
+                return null;
+            }
+            return shader;
+        };
+
+        const vs = compile(gl.VERTEX_SHADER, vsSource);
+        const fs = compile(gl.FRAGMENT_SHADER, fsSource);
+        if (!vs || !fs) {
+            return null;
+        }
+
+        const program = gl.createProgram();
+        gl.attachShader(program, vs);
+        gl.attachShader(program, fs);
+        gl.linkProgram(program);
+        gl.deleteShader(vs);
+        gl.deleteShader(fs);
+        if (!gl.getProgramParameter(program, gl.LINK_STATUS)) {
+            gl.deleteProgram(program);
+            return null;
+        }
+
+        return program;
+    }
+
+    recreateGpuStateTextures() {
+        if (!this.webglAvailable) {
+            return;
+        }
+        const gl = this.gl;
+        for (let i = 0; i < 2; i++) {
+            if (this.stateTextures[i]) {
+                gl.deleteTexture(this.stateTextures[i]);
+            }
+            if (this.stateFramebuffers[i]) {
+                gl.deleteFramebuffer(this.stateFramebuffers[i]);
+            }
+
+            const texture = gl.createTexture();
+            gl.bindTexture(gl.TEXTURE_2D, texture);
+            gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
+            gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
+            gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+            gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+            gl.pixelStorei(gl.UNPACK_ALIGNMENT, 1);
+            gl.texImage2D(gl.TEXTURE_2D, 0, gl.R8, this.gridWidth, this.gridHeight, 0, gl.RED, gl.UNSIGNED_BYTE, null);
+
+            const framebuffer = gl.createFramebuffer();
+            gl.bindFramebuffer(gl.FRAMEBUFFER, framebuffer);
+            gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, texture, 0);
+
+            this.stateTextures[i] = texture;
+            this.stateFramebuffers[i] = framebuffer;
+        }
+
+        gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+        this.sourceIndex = 0;
+        this.prevGpuFrame = null;
+    }
+
+    flattenGridToBytes() {
+        const bytes = new Uint8Array(this.gridWidth * this.gridHeight);
+        let idx = 0;
+        for (let y = 0; y < this.gridHeight; y++) {
+            for (let x = 0; x < this.gridWidth; x++) {
+                bytes[idx++] = this.grid[y][x] ? 255 : 0;
+            }
+        }
+        return bytes;
+    }
+
+    uploadGridToGPU() {
+        if (!this.webglAvailable) {
+            return;
+        }
+        const gl = this.gl;
+        const bytes = this.flattenGridToBytes();
+
+        for (let i = 0; i < 2; i++) {
+            gl.bindTexture(gl.TEXTURE_2D, this.stateTextures[i]);
+            gl.pixelStorei(gl.UNPACK_ALIGNMENT, 1);
+            gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, 0, this.gridWidth, this.gridHeight, gl.RED, gl.UNSIGNED_BYTE, bytes);
+        }
+    }
+
+    pullGridFromGPU() {
+        if (!this.webglAvailable) {
+            return;
+        }
+        const gl = this.gl;
+        const pixels = new Uint8Array(this.gridWidth * this.gridHeight);
+        gl.bindFramebuffer(gl.FRAMEBUFFER, this.stateFramebuffers[this.sourceIndex]);
+        gl.readPixels(0, 0, this.gridWidth, this.gridHeight, gl.RED, gl.UNSIGNED_BYTE, pixels);
+        gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+
+        let idx = 0;
+        for (let y = 0; y < this.gridHeight; y++) {
+            for (let x = 0; x < this.gridWidth; x++) {
+                this.grid[y][x] = pixels[idx++] > 127 ? 1 : 0;
+            }
+        }
+    }
+
+    setCellGPU(x, y, value) {
+        if (!this.webglAvailable) {
+            return;
+        }
+        const gl = this.gl;
+        const pixel = new Uint8Array([value ? 255 : 0]);
+        for (let i = 0; i < 2; i++) {
+            gl.bindTexture(gl.TEXTURE_2D, this.stateTextures[i]);
+            gl.pixelStorei(gl.UNPACK_ALIGNMENT, 1);
+            gl.texSubImage2D(gl.TEXTURE_2D, 0, x, y, 1, 1, gl.RED, gl.UNSIGNED_BYTE, pixel);
+        }
+    }
+
+    runGpuStep() {
+        if (!this.webglAvailable) {
+            return;
+        }
+        const gl = this.gl;
+        const src = this.sourceIndex;
+        const dst = 1 - src;
+
+        gl.bindFramebuffer(gl.FRAMEBUFFER, this.stateFramebuffers[dst]);
+        gl.viewport(0, 0, this.gridWidth, this.gridHeight);
+        gl.useProgram(this.simProgram);
+
+        const posLoc = gl.getAttribLocation(this.simProgram, 'a_pos');
+        gl.bindBuffer(gl.ARRAY_BUFFER, this.quadBuffer);
+        gl.enableVertexAttribArray(posLoc);
+        gl.vertexAttribPointer(posLoc, 2, gl.FLOAT, false, 0, 0);
+
+        gl.activeTexture(gl.TEXTURE0);
+        gl.bindTexture(gl.TEXTURE_2D, this.stateTextures[src]);
+        gl.uniform1i(gl.getUniformLocation(this.simProgram, 'u_state'), 0);
+        gl.uniform2i(gl.getUniformLocation(this.simProgram, 'u_gridSize'), this.gridWidth, this.gridHeight);
+
+        gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+        gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+        this.sourceIndex = dst;
+    }
+
+    drawWebGL() {
+        const gl = this.gl;
+        gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+        gl.viewport(0, 0, this.canvas.width, this.canvas.height);
+        gl.useProgram(this.drawProgram);
+
+        const posLoc = gl.getAttribLocation(this.drawProgram, 'a_pos');
+        gl.bindBuffer(gl.ARRAY_BUFFER, this.quadBuffer);
+        gl.enableVertexAttribArray(posLoc);
+        gl.vertexAttribPointer(posLoc, 2, gl.FLOAT, false, 0, 0);
+
+        gl.activeTexture(gl.TEXTURE0);
+        gl.bindTexture(gl.TEXTURE_2D, this.stateTextures[this.sourceIndex]);
+        gl.uniform1i(gl.getUniformLocation(this.drawProgram, 'u_state'), 0);
+        gl.uniform2f(gl.getUniformLocation(this.drawProgram, 'u_canvasSize'), this.canvas.width, this.canvas.height);
+        gl.uniform2f(gl.getUniformLocation(this.drawProgram, 'u_camera'), this.camera.x, this.camera.y);
+        gl.uniform1f(gl.getUniformLocation(this.drawProgram, 'u_zoom'), this.camera.zoom);
+        gl.uniform1f(gl.getUniformLocation(this.drawProgram, 'u_cellSize'), this.cellSize);
+        gl.uniform2f(gl.getUniformLocation(this.drawProgram, 'u_gridSize'), this.gridWidth, this.gridHeight);
+
+        gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+    }
+
+    updateGpuStats(currentTime) {
+        if (!this.webglAvailable || currentTime - this.lastGpuStatsTime < this.gpuStatsInterval) {
+            return;
+        }
+
+        const gl = this.gl;
+        const pixels = new Uint8Array(this.gridWidth * this.gridHeight);
+        gl.bindFramebuffer(gl.FRAMEBUFFER, this.stateFramebuffers[this.sourceIndex]);
+        gl.readPixels(0, 0, this.gridWidth, this.gridHeight, gl.RED, gl.UNSIGNED_BYTE, pixels);
+        gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+
+        let total = 0;
+        let born = 0;
+        let died = 0;
+        let lasting = 0;
+        for (let i = 0; i < pixels.length; i++) {
+            const alive = pixels[i] > 127;
+            if (alive) {
+                total += 1;
+            }
+            if (this.prevGpuFrame) {
+                const prevAlive = this.prevGpuFrame[i] > 127;
+                if (!prevAlive && alive) {
+                    born += 1;
+                } else if (prevAlive && !alive) {
+                    died += 1;
+                } else if (prevAlive && alive) {
+                    lasting += 1;
+                }
+            }
+        }
+
+        this.stats.total = total;
+        this.stats.born = born;
+        this.stats.died = died;
+        this.stats.lasting = lasting;
+        this.history.push(total);
+        if (this.history.length > this.MAX_HISTORY) {
+            this.history.shift();
+        }
+
+        this.prevGpuFrame = pixels;
+        this.lastGpuStatsTime = currentTime;
+    }
+
+    setGpuSimulationEnabled(enabled) {
+        if (!this.webglAvailable) {
+            this.useGpuSimulation = false;
+            return;
+        }
+
+        if (enabled && !this.useGpuSimulation) {
+            this.uploadGridToGPU();
+            this.prevGpuFrame = null;
+        }
+
+        if (!enabled && this.useGpuSimulation) {
+            this.pullGridFromGPU();
+        }
+
+        this.useGpuSimulation = enabled;
+        this.syncControlButtons();
     }
 
     isTypingInInput() {
@@ -195,7 +583,15 @@ class ConwaysGame {
                     break;
                 case ' ': 
                     if (!this.isRunning || this.isFrozen) {
-                        this.updateGrid();
+                        if (this.webglAvailable && this.useGpuSimulation) {
+                            this.runGpuStep();
+                            this.updateGpuStats(Date.now());
+                        } else {
+                            this.updateGrid();
+                            if (this.webglAvailable) {
+                                this.uploadGridToGPU();
+                            }
+                        }
                     }
                     break;
             }
@@ -218,6 +614,7 @@ class ConwaysGame {
     setupButtons() {
         this.startButton = document.getElementById('startButton');
         this.freezeButton = document.getElementById('freezeButton');
+        this.gpuButton = document.getElementById('gpuButton');
 
         this.startButton.onclick = (e) => {
             this.isRunning = !this.isRunning;
@@ -231,6 +628,9 @@ class ConwaysGame {
             this.isFrozen = false;
             this.stats = { born: 0, died: 0, lasting: 0, total: 0 };
             this.history = [];
+            if (this.webglAvailable) {
+                this.uploadGridToGPU();
+            }
             this.syncControlButtons();
             e.target.blur();
         };
@@ -247,8 +647,18 @@ class ConwaysGame {
                     this.grid[y][x] = Math.random() < 0.15 ? 1 : 0;
                 }
             }
+            if (this.webglAvailable) {
+                this.uploadGridToGPU();
+            }
             e.target.blur();
         };
+
+        if (this.gpuButton) {
+            this.gpuButton.onclick = (e) => {
+                this.setGpuSimulationEnabled(!this.useGpuSimulation);
+                e.target.blur();
+            };
+        }
 
         this.syncControlButtons();
     }
@@ -259,6 +669,15 @@ class ConwaysGame {
         }
         if (this.freezeButton) {
             this.freezeButton.style.backgroundColor = this.isFrozen ? '#6495ED' : '#ffffff';
+        }
+        if (this.gpuButton) {
+            if (!this.webglAvailable) {
+                this.gpuButton.textContent = 'GPU: N/A';
+                this.gpuButton.disabled = true;
+            } else {
+                this.gpuButton.textContent = this.useGpuSimulation ? 'GPU: On' : 'GPU: Off';
+                this.gpuButton.disabled = false;
+            }
         }
     }
 
@@ -299,6 +718,10 @@ class ConwaysGame {
     }
 
     getSerializableState() {
+        if (this.webglAvailable && this.useGpuSimulation) {
+            this.pullGridFromGPU();
+        }
+
         const cells = [];
         for (let y = 0; y < this.gridHeight; y++) {
             for (let x = 0; x < this.gridWidth; x++) {
@@ -480,6 +903,10 @@ class ConwaysGame {
         this.isFrozen = false;
         this.stats = { born: 0, died: 0, lasting: 0, total: 0 };
         this.history = [];
+        if (this.webglAvailable) {
+            this.uploadGridToGPU();
+            this.prevGpuFrame = null;
+        }
         this.syncControlButtons();
         this.updateStats();
     }
@@ -560,8 +987,14 @@ class ConwaysGame {
             this.isDragging = true;
             if (e.button === 0) {
                 this.grid[pos.y][pos.x] = 1 - this.grid[pos.y][pos.x];
+                if (this.webglAvailable) {
+                    this.setCellGPU(pos.x, pos.y, this.grid[pos.y][pos.x]);
+                }
             } else if (e.button === 1) {
                 this.grid[pos.y][pos.x] = 0;
+                if (this.webglAvailable) {
+                    this.setCellGPU(pos.x, pos.y, 0);
+                }
             }
         }
     }
@@ -578,8 +1011,14 @@ class ConwaysGame {
             pos.y > 0 && pos.y < this.gridHeight - 1) {
             if (e.buttons === 1) {
                 this.grid[pos.y][pos.x] = 1;
+                if (this.webglAvailable) {
+                    this.setCellGPU(pos.x, pos.y, 1);
+                }
             } else if (e.buttons === 4) {
                 this.grid[pos.y][pos.x] = 0;
+                if (this.webglAvailable) {
+                    this.setCellGPU(pos.x, pos.y, 0);
+                }
             }
         }
     }
@@ -793,16 +1232,35 @@ class ConwaysGame {
 
             // Update grid based on speed setting
             if (this.isRunning && !this.isFrozen) {
-                if (currentTime - this.lastUpdateTime >= this.UPDATE_INTERVAL) {
-                    this.updateGrid();
+                let steps = 0;
+                while (currentTime - this.lastUpdateTime >= this.UPDATE_INTERVAL && steps < this.MAX_STEPS_PER_FRAME) {
+                    if (this.webglAvailable && this.useGpuSimulation) {
+                        this.runGpuStep();
+                    } else {
+                        this.updateGrid();
+                        if (this.webglAvailable) {
+                            this.uploadGridToGPU();
+                        }
+                    }
+                    this.lastUpdateTime += this.UPDATE_INTERVAL;
+                    steps += 1;
+                }
+                if (steps === this.MAX_STEPS_PER_FRAME) {
                     this.lastUpdateTime = currentTime;
                 }
             }
 
-            this.ctx.fillStyle = '#000000';
-            this.ctx.fillRect(0, 0, this.canvas.width, this.canvas.height);
+            if (this.webglAvailable) {
+                this.drawWebGL();
+                if (this.useGpuSimulation) {
+                    this.updateGpuStats(currentTime);
+                }
+            } else {
+                this.ctx.fillStyle = '#000000';
+                this.ctx.fillRect(0, 0, this.canvas.width, this.canvas.height);
+                this.drawGrid();
+            }
 
-            this.drawGrid();
             this.updateStats();
             this.autosaveIfNeeded(currentTime);
 

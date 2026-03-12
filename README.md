@@ -4,9 +4,9 @@ Interactive Conway simulator with pan/zoom, stats, persistence, and pattern impo
 
 ## CPU vs GPU
 
-- Current implementation runs simulation logic on the **CPU** (JavaScript grid updates in `JS/game.js`).
-- Canvas rendering is 2D API; browser may use GPU acceleration for drawing, but the cell-rule computation is still CPU-bound.
-- For this project size, CPU is usually fine. A GPU/WebGL version can be faster for very large grids, but adds more code complexity.
+- Default mode uses **GPU simulation** via WebGL2 (`GPU: On`) for faster ticks on larger grids.
+- If WebGL2 is unavailable, the app automatically falls back to CPU mode.
+- You can toggle simulation backend at runtime with the `GPU: On/Off` button while keeping the same UI/controls.
 
 ## Run
 
@@ -21,6 +21,7 @@ Open `JS/index.html` in your browser.
 - Mouse wheel or touchpad two-finger vertical scroll: zoom at cursor
 - Left click/drag: draw living cells
 - Middle click/drag: erase cells
+- `GPU: On/Off`: switch between GPU simulation and CPU simulation (WebGL2 only)
 
 ## Save / Load / Export / Import
 
