@@ -678,17 +678,6 @@ class ConwaysGame {
         label.textContent = 'Tick Rate (ms): ';
         label.style.marginRight = '10px';
 
-        const input = document.createElement('input');
-        input.type = 'range';
-        input.min = String(this.MIN_UPDATE_INTERVAL);
-        input.max = String(this.MAX_UPDATE_INTERVAL);
-        input.value = this.UPDATE_INTERVAL;
-        input.style.width = '100px';
-
-        const valueDisplay = document.createElement('span');
-        valueDisplay.textContent = this.UPDATE_INTERVAL;
-        valueDisplay.style.marginLeft = '10px';
-
         const tickNumberInput = document.createElement('input');
         tickNumberInput.type = 'number';
         tickNumberInput.min = String(this.MIN_UPDATE_INTERVAL);
@@ -696,7 +685,12 @@ class ConwaysGame {
         tickNumberInput.step = '1';
         tickNumberInput.value = this.UPDATE_INTERVAL;
         tickNumberInput.style.width = '70px';
-        tickNumberInput.style.marginLeft = '10px';
+        tickNumberInput.style.marginLeft = '6px';
+
+        const applyTickRateButton = document.createElement('button');
+        applyTickRateButton.textContent = 'Apply';
+        applyTickRateButton.style.marginLeft = '8px';
+        applyTickRateButton.style.cursor = 'pointer';
 
         const applyTickRate = (rawValue) => {
             const parsed = parseInt(rawValue, 10);
@@ -706,13 +700,12 @@ class ConwaysGame {
             }
             const clamped = Math.max(this.MIN_UPDATE_INTERVAL, Math.min(this.MAX_UPDATE_INTERVAL, parsed));
             this.UPDATE_INTERVAL = clamped;
-            input.value = clamped;
-            valueDisplay.textContent = clamped;
             tickNumberInput.value = clamped;
         };
 
-        input.addEventListener('input', (e) => {
-            applyTickRate(e.target.value);
+        applyTickRateButton.addEventListener('click', () => {
+            applyTickRate(tickNumberInput.value);
+            tickNumberInput.blur();
         });
 
         tickNumberInput.addEventListener('keydown', (e) => {
@@ -730,9 +723,8 @@ class ConwaysGame {
         });
 
         tickControl.appendChild(label);
-        tickControl.appendChild(input);
-        tickControl.appendChild(valueDisplay);
         tickControl.appendChild(tickNumberInput);
+        tickControl.appendChild(applyTickRateButton);
 
         const gridSizeRow = document.createElement('div');
         gridSizeRow.style.marginTop = '10px';
