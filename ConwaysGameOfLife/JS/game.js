@@ -688,6 +688,7 @@ class ConwaysGame {
             this.isRunning = false;
             this.stats = { born: 0, died: 0, lasting: 0, total: 0 };
             this.history = [];
+            this.tickCount = 0;
             if (this.webglAvailable) {
                 this.uploadGridToGPU();
             }
