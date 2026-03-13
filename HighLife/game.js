@@ -1,5 +1,7 @@
 class ConwaysGame {
     constructor() {
+        const config = window.GOL_CONFIG || {};
+
         // Canvas setup
         this.canvas = document.getElementById('gameCanvas');
         this.ctx = null;
@@ -59,7 +61,8 @@ class ConwaysGame {
         this.stats = { born: 0, died: 0, lasting: 0, total: 0 };
         this.history = [];
         this.tickCount = 0;
-        this.ruleLabel = 'B36/S23';
+        this.birthOnSix = config.birthOnSix === true;
+        this.ruleLabel = this.birthOnSix ? 'B36/S23' : 'B3/S23';
         this.MAX_HISTORY = 100;
         this.MIN_UPDATE_INTERVAL = 5;
         this.MAX_UPDATE_INTERVAL = 1000;
@@ -273,6 +276,7 @@ class ConwaysGame {
             precision highp sampler2D;
             uniform sampler2D u_state;
             uniform ivec2 u_gridSize;
+            uniform int u_birthOnSix;
             out vec4 outColor;
 
             int cellAt(ivec2 p) {
@@ -304,7 +308,7 @@ class ConwaysGame {
                 if (alive == 1) {
                     nextState = (n == 2 || n == 3) ? 1 : 0;
                 } else {
-                    nextState = (n == 3 || n == 6) ? 1 : 0;
+                    nextState = (n == 3 || (u_birthOnSix == 1 && n == 6)) ? 1 : 0;
                 }
 
                 outColor = vec4(float(nextState), 0.0, 0.0, 1.0);
@@ -687,6 +691,7 @@ class ConwaysGame {
         gl.bindTexture(gl.TEXTURE_2D, this.stateTextures[src]);
         gl.uniform1i(gl.getUniformLocation(this.simProgram, 'u_state'), 0);
         gl.uniform2i(gl.getUniformLocation(this.simProgram, 'u_gridSize'), this.gridWidth, this.gridHeight);
+        gl.uniform1i(gl.getUniformLocation(this.simProgram, 'u_birthOnSix'), this.birthOnSix ? 1 : 0);
 
         gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
         gl.bindFramebuffer(gl.FRAMEBUFFER, null);
@@ -1639,7 +1644,7 @@ class ConwaysGame {
                 if (alive) {
                     willLive = neighbors === 2 || neighbors === 3;
                 } else {
-                    willLive = neighbors === 3 || neighbors === 6;
+                    willLive = neighbors === 3 || (this.birthOnSix && neighbors === 6);
                 }
 
                 if (alive) {
