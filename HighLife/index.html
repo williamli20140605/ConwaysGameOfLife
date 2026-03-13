@@ -1,0 +1,73 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>HighLife (B36/S23)</title>
+    <style>
+        body {
+            margin: 0;
+            background: black;
+            color: white;
+            font-family: Arial, sans-serif;
+            overflow: hidden;
+        }
+        #gameCanvas {
+            position: absolute;
+            top: 0;
+            left: 0;
+        }
+        .controls {
+            position: fixed;
+            top: 10px;
+            right: 10px;
+            z-index: 1;
+        }
+        .button {
+            margin: 0 5px;
+            padding: 10px 20px;
+            cursor: pointer;
+            outline: none;
+            user-select: none;
+            -webkit-user-select: none;
+            -moz-user-select: none;
+            -ms-user-select: none;
+        }
+        .button:focus {
+            outline: none;
+            box-shadow: none;
+        }
+        .stats {
+            position: fixed;
+            top: 10px;
+            left: 10px;
+            z-index: 1;
+        }
+        #populationGraph {
+            margin-top: 10px;
+            background: #323232;
+        }
+    </style>
+</head>
+<body>
+    <canvas id="gameCanvas"></canvas>
+    <div class="controls">
+        <button id="startButton" class="button">Start</button>
+        <button id="clearButton" class="button">Reset</button>
+        <button id="randomButton" class="button">Random</button>
+        <button id="exportButton" class="button">Export</button>
+        <button id="importButton" class="button">Import</button>
+        <button id="gpuButton" class="button">GPU: On</button>
+    </div>
+    <input id="importFileInput" type="file" accept="application/json,.json,.rle,.mc,text/plain" style="display: none;">
+    <div class="stats">
+        <div id="cameraInfo"></div>
+        <div id="statsInfo"></div>
+        <canvas id="populationGraph" width="200" height="100"></canvas>
+    </div>
+    <script>
+        window.GOL_CONFIG = {
+            birthOnSix: true
+        };
+    </script>
+    <script src="game.js"></script>
+</body>
+</html>

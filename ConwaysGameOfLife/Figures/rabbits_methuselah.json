@@ -1,0 +1,46 @@
+{
+  "version": 2,
+  "format": "cells",
+  "name": "Rabbits Methuselah",
+  "description": "The 'Rabbits' methuselah: only 9 cells, but takes 17,331 generations to stabilize into a final population of 1,744. One of the most explosive tiny patterns known.",
+  "width": 500,
+  "height": 500,
+  "cells": [
+    [
+      250,
+      250
+    ],
+    [
+      252,
+      250
+    ],
+    [
+      254,
+      250
+    ],
+    [
+      255,
+      250
+    ],
+    [
+      256,
+      250
+    ],
+    [
+      251,
+      251
+    ],
+    [
+      255,
+      251
+    ],
+    [
+      250,
+      252
+    ],
+    [
+      251,
+      252
+    ]
+  ]
+}

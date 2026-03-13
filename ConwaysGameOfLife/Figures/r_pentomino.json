@@ -1,0 +1,30 @@
+{
+    "version": 2,
+    "format": "cells",
+    "name": "R-pentomino",
+    "description": "Tiny 5-cell methuselah that evolves for a long time.",
+    "width": 23,
+    "height": 23,
+    "cells": [
+        [
+            11,
+            10
+        ],
+        [
+            12,
+            10
+        ],
+        [
+            10,
+            11
+        ],
+        [
+            11,
+            11
+        ],
+        [
+            11,
+            12
+        ]
+    ]
+}
