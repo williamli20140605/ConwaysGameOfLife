@@ -1,0 +1,46 @@
+{
+    "version": 2,
+    "format": "cells",
+    "name": "LWSS",
+    "description": "Lightweight spaceship moving horizontally. Period 4.",
+    "width": 25,
+    "height": 24,
+    "cells": [
+        [
+            10,
+            10
+        ],
+        [
+            13,
+            10
+        ],
+        [
+            14,
+            11
+        ],
+        [
+            10,
+            12
+        ],
+        [
+            14,
+            12
+        ],
+        [
+            11,
+            13
+        ],
+        [
+            12,
+            13
+        ],
+        [
+            13,
+            13
+        ],
+        [
+            14,
+            13
+        ]
+    ]
+}

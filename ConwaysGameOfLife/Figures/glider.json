@@ -1,0 +1,30 @@
+{
+    "version": 2,
+    "format": "cells",
+    "name": "Glider",
+    "description": "Classic 5-cell diagonal spaceship. Period 4.",
+    "width": 23,
+    "height": 23,
+    "cells": [
+        [
+            11,
+            10
+        ],
+        [
+            12,
+            11
+        ],
+        [
+            10,
+            12
+        ],
+        [
+            11,
+            12
+        ],
+        [
+            12,
+            12
+        ]
+    ]
+}

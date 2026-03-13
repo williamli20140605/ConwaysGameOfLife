@@ -1,0 +1,22 @@
+{
+    "version": 2,
+    "format": "cells",
+    "name": "Blinker",
+    "description": "Smallest oscillator. Period 2.",
+    "width": 23,
+    "height": 21,
+    "cells": [
+        [
+            10,
+            10
+        ],
+        [
+            11,
+            10
+        ],
+        [
+            12,
+            10
+        ]
+    ]
+}
