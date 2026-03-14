@@ -760,6 +760,34 @@ class ConwaysGame {
         this.sourceIndex = dst;
         this.cpuGridDirtyFromGpu = true;
 
+        const gridArea = this.gridWidth * this.gridHeight;
+        if (gridArea >= this.GPU_STATS_DISABLE_DURING_RUN_AREA) {
+            let nextActivatedBounds = this.expandBounds(rect, 1);
+            if (useActiveRegion) {
+                this.gpuActivatedBoundsTickCounter += 1;
+                if (
+                    this.gpuActivatedBoundsTickCounter >= this.GPU_ACTIVATED_REGION_SAMPLE_INTERVAL ||
+                    (rect.width * rect.height <= 250000)
+                ) {
+                    const diffStats = this.sampleGpuActivatedBoundsFromRect(rect, dst);
+                    nextActivatedBounds = diffStats.nextActivatedBounds;
+                    this.gpuActivatedBoundsTickCounter = 0;
+                }
+            } else {
+                this.gpuActivatedBoundsTickCounter = 0;
+            }
+
+            this.activatedBounds = nextActivatedBounds;
+            this.activatedBoundsMayNeedRecalc = false;
+            const total = this.liveCellCount;
+            this.stats = { born: 0, died: 0, lasting: total, total };
+            this.history.push(total);
+            if (this.history.length > this.MAX_HISTORY) {
+                this.history.shift();
+            }
+            return;
+        }
+
         const diffStats = this.sampleGpuActivatedBoundsFromRect(rect, dst);
         const previousTotal = this.liveCellCount;
         const born = diffStats.born;
@@ -1904,7 +1932,12 @@ class ConwaysGame {
         const info = document.getElementById('statsInfo');
         let gpuStatsIntervalText = '';
         if (this.webglAvailable && this.useGpuSimulation) {
-            gpuStatsIntervalText = '<br>GPU Stats: activated-diff, per-tick, accurate';
+            const area = this.gridWidth * this.gridHeight;
+            if (area >= this.GPU_STATS_DISABLE_DURING_RUN_AREA) {
+                gpuStatsIntervalText = '<br>GPU Stats: disabled for large grid';
+            } else {
+                gpuStatsIntervalText = '<br>GPU Stats: activated-diff, per-tick, accurate';
+            }
         }
         info.innerHTML = `
             Rule: ${this.ruleLabel}<br>
